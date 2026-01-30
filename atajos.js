@@ -73,7 +73,6 @@ function exportFacturaDetalleAsXlsx() {
   };
 
   const exportSheetAsPdfBlob_ = (spreadsheetId, gid, filename) => {
-    // Parámetros típicos para PDF de una sola hoja
     const base = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export`;
     const params = [
       "format=pdf",
@@ -116,6 +115,10 @@ function exportFacturaDetalleAsXlsx() {
     ? DriveApp.getFolderById(EXPORT_FOLDER_ID)
     : DriveApp.getRootFolder();
 
+  // Guardar estados de ocultación para restaurarlos al final
+  const wasDetalleHidden = sourceDetalle.isSheetHidden();
+  const wasAgrupadaHidden = sourceAgrupada.isSheetHidden();
+
   // 1) Crear hoja temporal (dentro del original) para congelar fórmulas -> valores SIN romper referencias
   const tempSheetName = `${SHEET_DETALLE_NAME}__TEMP_VALORES__${Date.now()}`;
   let tempSheetInOriginal = null;
@@ -124,9 +127,14 @@ function exportFacturaDetalleAsXlsx() {
   let tempXlsxSsId = null;
 
   try {
+    // Asegurar que ambas hojas objetivo estén visibles durante el proceso
+    // (evita errores tipo "No se pueden eliminar todas las hojas visibles...")
+    if (wasDetalleHidden) sourceDetalle.showSheet();
+    if (wasAgrupadaHidden) sourceAgrupada.showSheet();
+
     SpreadsheetApp.flush();
 
-    // Duplicar detalle dentro del original
+    // Duplicar detalle dentro del original (la hoja creada es visible por defecto)
     tempSheetInOriginal = sourceDetalle.copyTo(ss).setName(tempSheetName);
 
     // Congelar fórmulas -> valores en TODA la hoja (por bloques)
@@ -158,6 +166,9 @@ function exportFacturaDetalleAsXlsx() {
     const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName(SHEET_DETALLE_NAME);
     tempXlsxSs.setActiveSheet(copied);
 
+    // Asegurar que haya al menos 1 hoja visible antes de borrar las demás (caso extremo)
+    copied.showSheet();
+
     // Borrar hojas por defecto del temp XLSX
     defaultSheets.forEach(sh => {
       if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
@@ -180,6 +191,12 @@ function exportFacturaDetalleAsXlsx() {
     // Limpieza hoja temporal del original
     try {
       if (tempSheetInOriginal) ss.deleteSheet(tempSheetInOriginal);
+    } catch (_) {}
+
+    // Restaurar estados de ocultación originales
+    try {
+      if (wasDetalleHidden) sourceDetalle.hideSheet();
+      if (wasAgrupadaHidden) sourceAgrupada.hideSheet();
     } catch (_) {}
 
     // Limpieza spreadsheet temporal XLSX
