@@ -356,28 +356,6 @@ function ocultarHojasAuxiliares() {
 // ============================
 // FACTURAS (Mantiene el formato de miles con punto y decimal con coma)
 // ============================
-function generarFacturaDetalle() {
-  const CONFIG = {
-    EXPORT_FOLDER_ID: "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z",
-
-    // GIDs
-    SHEET_FACTURAS_GID: 1019856549,     // Facturas (selección de IDs, col A)
-    SHEET_FACTURA_GID: 649064952,       // _factura (pdf)
-
-    // Antes de exportar: escribir ID en A1 de esta hoja
-    TARGET_A1_GID: 649064952,           // _factura
-
-    // PDF
-    PDF_SCALE: 4,
-    PDF_PORTRAIT: true,
-
-    // XLSX (no se usa aquí, pero se deja por compatibilidad del core)
-    DELETE_TEMP_FILES_AFTER: true,
-  };
-
-  ejecutarExport_(CONFIG, { doXlsx: false, doPdf: true, pdfGid: CONFIG.SHEET_FACTURA_GID });
-}
-
 function generarFacturaAgrupada() {
   const CONFIG = {
     EXPORT_FOLDER_ID: "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z",
@@ -405,10 +383,28 @@ function generarFacturaAgrupada() {
   ejecutarExport_(CONFIG, { doXlsx: true, doPdf: true, pdfGid: CONFIG.SHEET_AGRUPADA_GID });
 }
 
-/**
- * Núcleo común: valida selección, confirma multi-ID, gestiona ocultación,
- * escribe A1 si procede, exporta PDF y/o XLSX por cada ID.
- */
+function generarFacturaDetalle() {
+  const CONFIG = {
+    EXPORT_FOLDER_ID: "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z",
+
+    // GIDs
+    SHEET_FACTURAS_GID: 1019856549,     // Facturas (selección de IDs, col A)
+    SHEET_FACTURA_GID: 649064952,       // _factura (pdf)
+
+    // Antes de exportar: escribir ID en A1 de esta hoja
+    TARGET_A1_GID: 649064952,           // _factura
+
+    // PDF
+    PDF_SCALE: 4,
+    PDF_PORTRAIT: true,
+
+    // XLSX (no se usa aquí, pero se deja por compatibilidad del core)
+    DELETE_TEMP_FILES_AFTER: true,
+  };
+
+  ejecutarExport_(CONFIG, { doXlsx: false, doPdf: true, pdfGid: CONFIG.SHEET_FACTURA_GID });
+}
+
 function ejecutarExport_(CONFIG, options) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ssId = ss.getId();
@@ -473,19 +469,26 @@ function ejecutarExport_(CONFIG, options) {
   const activeRange = ss.getActiveRange();
   const activeSheet = activeRange.getSheet();
 
-  if (
-    activeSheet.getSheetId() !== CONFIG.SHEET_FACTURAS_GID ||
-    activeRange.getColumn() !== 1 ||
-    activeRange.getNumColumns() !== 1
-  ) {
+  const startRow = activeRange.getRow();
+  const startCol = activeRange.getColumn();
+  const numCols = activeRange.getNumColumns();
+
+  const ok =
+    activeSheet.getSheetId() === CONFIG.SHEET_FACTURAS_GID &&
+    startCol === 1 &&
+    numCols === 1 &&
+    startRow >= 2; // excluye A1 (y cualquier rango que empiece en fila 1)
+
+  if (!ok) {
     ui.alert(
       "Selección inválida",
-      "Debes seleccionar una o varias celdas (una sola columna) de la columna A en la hoja Facturas.",
+      "Debes seleccionar una o varias celdas de Facturas!A2:A (columna A, desde la fila 2). No se permite incluir A1 ni seleccionar otras columnas.",
       ui.ButtonSet.OK
     );
     return;
   }
 
+  // IDs únicos no vacíos (en orden)
   const raw = activeRange.getValues().flat();
   const ids = [];
   const seen = new Set();
