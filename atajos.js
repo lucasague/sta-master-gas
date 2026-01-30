@@ -43,7 +43,7 @@ function exportFacturaDetalleAsXlsx() {
   const SHEET_FACTURAS_NAME = "Facturas";
   const SHEET_FACTURAS_GID = 1019856549;
 
-  // Congelado de fórmulas -> valores
+  // Congelado de fórmulas -> valores (en hoja temporal dentro del original)
   const ROW_BLOCK = 250;
   const COL_BLOCK = 20;
 
@@ -100,6 +100,12 @@ function exportFacturaDetalleAsXlsx() {
     );
   };
 
+  const safeFileNamePart_ = (v) => {
+    const s = String(v == null ? "" : v).trim();
+    // Quita caracteres problemáticos para nombres de archivo en Drive
+    return s.replace(/[\\\/:*?"<>|\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
+  };
+
   // ======================
   // MAIN
   // ======================
@@ -116,117 +122,154 @@ function exportFacturaDetalleAsXlsx() {
   }
 
   // ======================
-  // VALIDACIÓN CELDA ACTIVA
+  // VALIDACIÓN SELECCIÓN (varios IDs)
   // ======================
   const activeRange = ss.getActiveRange();
   const activeSheet = activeRange.getSheet();
 
-  if (
-    activeSheet.getSheetId() !== SHEET_FACTURAS_GID ||
-    activeRange.getColumn() !== 1 ||
-    activeRange.getNumRows() !== 1 ||
-    activeRange.getNumColumns() !== 1
-  ) {
+  if (activeSheet.getSheetId() !== SHEET_FACTURAS_GID || activeRange.getColumn() !== 1) {
     ui.alert(
       "Selección inválida",
-      "Debes seleccionar UNA celda de la columna A en la hoja 'Facturas' antes de ejecutar esta función.",
+      "Debes seleccionar una o varias celdas de la columna A en la hoja 'Facturas' antes de ejecutar esta función.",
       ui.ButtonSet.OK
     );
     return;
   }
 
-  // Valor seleccionado (sin formato)
-  const facturaId = activeRange.getValue();
+  // Recoge IDs (una columna) y filtra vacíos / duplicados manteniendo orden
+  const raw = activeRange.getValues().flat();
+  const ids = [];
+  const seen = new Set();
+  for (const v of raw) {
+    const s = String(v == null ? "" : v).trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    ids.push(s);
+  }
 
-  // Pegar valor en _facturaAgrupada!A1 (sin formato)
-  sheetAgrupada.getRange("A1").setValue(facturaId);
+  if (ids.length === 0) {
+    ui.alert("No hay IDs", "La selección no contiene ningún ID válido.", ui.ButtonSet.OK);
+    return;
+  }
 
-  // ======================
-  // EXPORTACIÓN
-  // ======================
+  // Si hay más de uno, confirmar
+  if (ids.length > 1) {
+    const resp = ui.alert(
+      "Confirmación",
+      `Has seleccionado ${ids.length} IDs en Facturas!A.\n¿Quieres exportar TODOS?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
+  }
+
+  // Carpeta destino
   const folder = EXPORT_FOLDER_ID
     ? DriveApp.getFolderById(EXPORT_FOLDER_ID)
     : DriveApp.getRootFolder();
 
+  // Hojas pueden estar ocultas: guardamos/restauramos
   const wasDetalleHidden = sheetDetalle.isSheetHidden();
   const wasAgrupadaHidden = sheetAgrupada.isSheetHidden();
 
-  const tempSheetName = `${SHEET_DETALLE_NAME}__TEMP_VALORES__${Date.now()}`;
-  let tempSheetInOriginal = null;
-  let tempXlsxSsId = null;
+  // Para limpiar temporales
+  const tempXlsxIds = [];
+  const tempSheetsToDelete = [];
 
   try {
+    // Asegurar visibles mientras se trabaja
     if (wasDetalleHidden) sheetDetalle.showSheet();
     if (wasAgrupadaHidden) sheetAgrupada.showSheet();
 
     SpreadsheetApp.flush();
 
-    // Duplicar detalle
-    tempSheetInOriginal = sheetDetalle.copyTo(ss).setName(tempSheetName);
+    // Procesar cada ID
+    for (let i = 0; i < ids.length; i++) {
+      const facturaId = ids[i];
 
-    // Congelar fórmulas -> valores (toda la hoja)
-    SpreadsheetApp.flush();
-    const maxRows = tempSheetInOriginal.getMaxRows();
-    const maxCols = tempSheetInOriginal.getMaxColumns();
+      // 1) Pegar ID en _facturaAgrupada!A1 (sin formato) para recalcular todo lo dependiente
+      sheetAgrupada.getRange("A1").setValue(facturaId);
+      SpreadsheetApp.flush();
 
-    for (let r = 1; r <= maxRows; r += ROW_BLOCK) {
-      const nr = Math.min(ROW_BLOCK, maxRows - r + 1);
-      for (let c = 1; c <= maxCols; c += COL_BLOCK) {
-        const nc = Math.min(COL_BLOCK, maxCols - c + 1);
-        const block = tempSheetInOriginal.getRange(r, c, nr, nc);
-        block.copyTo(block, { contentsOnly: true });
+      // 2) Hoja temporal dentro del original para "congelar" valores sin romper referencias
+      const tempSheetName = `${SHEET_DETALLE_NAME}__TEMP_VALORES__${Date.now()}__${i + 1}`;
+      const tempSheetInOriginal = sheetDetalle.copyTo(ss).setName(tempSheetName);
+      tempSheetsToDelete.push(tempSheetInOriginal);
+
+      // Congelar fórmulas -> valores en TODA la hoja (por bloques)
+      SpreadsheetApp.flush();
+      const maxRows = tempSheetInOriginal.getMaxRows();
+      const maxCols = tempSheetInOriginal.getMaxColumns();
+
+      for (let r = 1; r <= maxRows; r += ROW_BLOCK) {
+        const nr = Math.min(ROW_BLOCK, maxRows - r + 1);
+        for (let c = 1; c <= maxCols; c += COL_BLOCK) {
+          const nc = Math.min(COL_BLOCK, maxCols - c + 1);
+          const block = tempSheetInOriginal.getRange(r, c, nr, nc);
+          block.copyTo(block, { contentsOnly: true });
+        }
       }
-    }
 
-    // Eliminar columnas ocultas
-    for (let c = tempSheetInOriginal.getMaxColumns(); c >= 1; c--) {
-      if (tempSheetInOriginal.isColumnHiddenByUser(c)) {
-        tempSheetInOriginal.deleteColumn(c);
+      // Eliminar columnas ocultas
+      for (let c = tempSheetInOriginal.getMaxColumns(); c >= 1; c--) {
+        if (tempSheetInOriginal.isColumnHiddenByUser(c)) {
+          tempSheetInOriginal.deleteColumn(c);
+        }
       }
+
+      // 3) Spreadsheet temporal para XLSX
+      const tempXlsxSs = SpreadsheetApp.create(
+        `${ss.getName()}__${SHEET_DETALLE_NAME}__TEMP_EXPORT__${i + 1}`
+      );
+      const tempXlsxSsId = tempXlsxSs.getId();
+      tempXlsxIds.push(tempXlsxSsId);
+
+      const defaultSheets = tempXlsxSs.getSheets();
+      const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName(SHEET_DETALLE_NAME);
+      copied.showSheet();
+
+      defaultSheets.forEach(sh => {
+        if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
+      });
+
+      // 4) Export XLSX (con ID en nombre)
+      const idPart = safeFileNamePart_(facturaId) || `ID_${i + 1}`;
+      const xlsxName = `${ss.getName()}__${SHEET_DETALLE_NAME}__${idPart}.xlsx`;
+      const xlsxBlob = exportSpreadsheetAsXlsxBlob_(tempXlsxSsId, xlsxName);
+      folder.createFile(xlsxBlob);
+
+      // 5) Export PDF agrupada (con ID en nombre)
+      const pdfName = `${ss.getName()}__${SHEET_AGRUPADA_NAME}__${idPart}.pdf`;
+      const pdfBlob = exportSheetAsPdfBlob_(ssId, SHEET_AGRUPADA_GID, pdfName);
+      folder.createFile(pdfBlob);
+
+      // 6) Borrar hoja temporal del original (ya no hace falta)
+      ss.deleteSheet(tempSheetInOriginal);
     }
-
-    // Spreadsheet temporal XLSX
-    const tempXlsxSs = SpreadsheetApp.create(
-      `${ss.getName()}__${SHEET_DETALLE_NAME}__TEMP_EXPORT`
-    );
-    tempXlsxSsId = tempXlsxSs.getId();
-
-    const defaultSheets = tempXlsxSs.getSheets();
-    const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName(SHEET_DETALLE_NAME);
-    copied.showSheet();
-
-    defaultSheets.forEach(sh => {
-      if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
-    });
-
-    // Export XLSX
-    const xlsxBlob = exportSpreadsheetAsXlsxBlob_(
-      tempXlsxSsId,
-      `${ss.getName()}__${SHEET_DETALLE_NAME}.xlsx`
-    );
-    folder.createFile(xlsxBlob);
-
-    // Export PDF (_facturaAgrupada)
-    const pdfBlob = exportSheetAsPdfBlob_(
-      ssId,
-      SHEET_AGRUPADA_GID,
-      `${ss.getName()}__${SHEET_AGRUPADA_NAME}.pdf`
-    );
-    folder.createFile(pdfBlob);
 
   } finally {
+    // Limpieza extra por si algo falló a mitad
     try {
-      if (tempSheetInOriginal) ss.deleteSheet(tempSheetInOriginal);
+      // hojas temporales pendientes
+      tempSheetsToDelete.forEach(sh => {
+        try {
+          if (sh && sh.getParent()) ss.deleteSheet(sh);
+        } catch (_) {}
+      });
     } catch (_) {}
 
+    // restaurar ocultación
     try {
       if (wasDetalleHidden) sheetDetalle.hideSheet();
       if (wasAgrupadaHidden) sheetAgrupada.hideSheet();
     } catch (_) {}
 
+    // borrar spreadsheets temporales
     try {
-      if (DELETE_TEMP_FILES_AFTER && tempXlsxSsId) {
-        DriveApp.getFileById(tempXlsxSsId).setTrashed(true);
+      if (DELETE_TEMP_FILES_AFTER) {
+        tempXlsxIds.forEach(id => {
+          try { DriveApp.getFileById(id).setTrashed(true); } catch (_) {}
+        });
       }
     } catch (_) {}
   }
