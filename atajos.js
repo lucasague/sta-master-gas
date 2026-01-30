@@ -27,6 +27,7 @@ function onOpen() {
 // --------------------------------------------------------------------------------------------------------------
 // - COMIENZO DE LA PRUEBA
 // ------------------------------------------------------------------------------------------a--------------------
+
 function exportFacturaDetalleAsXlsx() {
   // ======================
   // CONFIG (dentro función)
@@ -34,14 +35,10 @@ function exportFacturaDetalleAsXlsx() {
   const EXPORT_FOLDER_ID = "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z";
   const DELETE_TEMP_FILES_AFTER = true;
 
-  const SHEET_DETALLE_NAME = "_facturaDetalle";
-  const SHEET_DETALLE_GID = 333755606;
-
-  const SHEET_AGRUPADA_NAME = "_facturaAgrupada";
-  const SHEET_AGRUPADA_GID = 1412036802;
-
-  const SHEET_FACTURAS_NAME = "Facturas";
-  const SHEET_FACTURAS_GID = 1019856549;
+  // GIDs
+  const SHEET_DETALLE_GID = 333755606;     // _facturaDetalle
+  const SHEET_AGRUPADA_GID = 1412036802;   // _facturaAgrupada
+  const SHEET_FACTURAS_GID = 1019856549;   // Facturas
 
   // Congelado de fórmulas -> valores (en hoja temporal dentro del original)
   const ROW_BLOCK = 250;
@@ -54,7 +51,15 @@ function exportFacturaDetalleAsXlsx() {
   // ======================
   // Helpers (internos)
   // ======================
-  const exportSpreadsheetIdAsBlob_ = (spreadsheetId, filename, mime, url) => {
+  const getSheetByGid_ = (spreadsheet, gid) => {
+    const sheets = spreadsheet.getSheets();
+    for (const sh of sheets) {
+      if (sh.getSheetId() === gid) return sh;
+    }
+    return null;
+  };
+
+  const exportSpreadsheetIdAsBlob_ = (filename, mime, url) => {
     const token = ScriptApp.getOAuthToken();
     const resp = UrlFetchApp.fetch(url, {
       method: "get",
@@ -72,7 +77,7 @@ function exportFacturaDetalleAsXlsx() {
 
   const exportSpreadsheetAsXlsxBlob_ = (spreadsheetId, filename) => {
     const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`;
-    return exportSpreadsheetIdAsBlob_(spreadsheetId, filename, "xlsx", url);
+    return exportSpreadsheetIdAsBlob_(filename, "xlsx", url);
   };
 
   const exportSheetAsPdfBlob_ = (spreadsheetId, gid, filename) => {
@@ -92,18 +97,7 @@ function exportFacturaDetalleAsXlsx() {
       "fzr=false",
     ].join("&");
 
-    return exportSpreadsheetIdAsBlob_(
-      spreadsheetId,
-      filename,
-      "pdf",
-      `${base}?${params}`
-    );
-  };
-
-  const safeFileNamePart_ = (v) => {
-    const s = String(v == null ? "" : v).trim();
-    // Quita caracteres problemáticos para nombres de archivo en Drive
-    return s.replace(/[\\\/:*?"<>|\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
+    return exportSpreadsheetIdAsBlob_(filename, "pdf", `${base}?${params}`);
   };
 
   // ======================
@@ -113,12 +107,12 @@ function exportFacturaDetalleAsXlsx() {
   const ssId = ss.getId();
   const ui = SpreadsheetApp.getUi();
 
-  const sheetDetalle = ss.getSheetByName(SHEET_DETALLE_NAME);
-  const sheetAgrupada = ss.getSheetByName(SHEET_AGRUPADA_NAME);
-  const sheetFacturas = ss.getSheetByName(SHEET_FACTURAS_NAME);
+  const sheetDetalle = getSheetByGid_(ss, SHEET_DETALLE_GID);
+  const sheetAgrupada = getSheetByGid_(ss, SHEET_AGRUPADA_GID);
+  const sheetFacturas = getSheetByGid_(ss, SHEET_FACTURAS_GID);
 
   if (!sheetDetalle || !sheetAgrupada || !sheetFacturas) {
-    throw new Error("No se encuentran todas las hojas necesarias.");
+    throw new Error("No se encuentran todas las hojas necesarias por GID (detalle/agrupada/facturas).");
   }
 
   // ======================
@@ -127,16 +121,20 @@ function exportFacturaDetalleAsXlsx() {
   const activeRange = ss.getActiveRange();
   const activeSheet = activeRange.getSheet();
 
-  if (activeSheet.getSheetId() !== SHEET_FACTURAS_GID || activeRange.getColumn() !== 1) {
+  if (
+    activeSheet.getSheetId() !== SHEET_FACTURAS_GID ||
+    activeRange.getColumn() !== 1 ||
+    activeRange.getNumColumns() !== 1
+  ) {
     ui.alert(
       "Selección inválida",
-      "Debes seleccionar una o varias celdas de la columna A en la hoja 'Facturas' antes de ejecutar esta función.",
+      "Debes seleccionar una o varias celdas (una sola columna) de la columna A en la hoja Facturas antes de ejecutar esta función.",
       ui.ButtonSet.OK
     );
     return;
   }
 
-  // Recoge IDs (una columna) y filtra vacíos / duplicados manteniendo orden
+  // Recoge IDs y filtra vacíos / duplicados manteniendo orden
   const raw = activeRange.getValues().flat();
   const ids = [];
   const seen = new Set();
@@ -153,11 +151,10 @@ function exportFacturaDetalleAsXlsx() {
     return;
   }
 
-  // Si hay más de uno, confirmar
   if (ids.length > 1) {
     const resp = ui.alert(
       "Confirmación",
-      `Has seleccionado ${ids.length} IDs en Facturas!A.\n¿Quieres exportar TODOS?`,
+      `Has seleccionado ${ids.length} IDs.\n¿Quieres exportar TODOS los IDs seleccionados?`,
       ui.ButtonSet.YES_NO
     );
     if (resp !== ui.Button.YES) return;
@@ -183,16 +180,15 @@ function exportFacturaDetalleAsXlsx() {
 
     SpreadsheetApp.flush();
 
-    // Procesar cada ID
     for (let i = 0; i < ids.length; i++) {
       const facturaId = ids[i];
 
-      // 1) Pegar ID en _facturaAgrupada!A1 (sin formato) para recalcular todo lo dependiente
+      // 1) Pegar ID en _facturaAgrupada!A1
       sheetAgrupada.getRange("A1").setValue(facturaId);
       SpreadsheetApp.flush();
 
-      // 2) Hoja temporal dentro del original para "congelar" valores sin romper referencias
-      const tempSheetName = `${SHEET_DETALLE_NAME}__TEMP_VALORES__${Date.now()}__${i + 1}`;
+      // 2) Hoja temporal dentro del original para congelar valores sin romper referencias
+      const tempSheetName = `__TEMP_VALORES__${Date.now()}__${i + 1}`;
       const tempSheetInOriginal = sheetDetalle.copyTo(ss).setName(tempSheetName);
       tempSheetsToDelete.push(tempSheetInOriginal);
 
@@ -218,39 +214,32 @@ function exportFacturaDetalleAsXlsx() {
       }
 
       // 3) Spreadsheet temporal para XLSX
-      const tempXlsxSs = SpreadsheetApp.create(
-        `${ss.getName()}__${SHEET_DETALLE_NAME}__TEMP_EXPORT__${i + 1}`
-      );
+      const tempXlsxSs = SpreadsheetApp.create(`__TEMP_EXPORT__${Date.now()}__${i + 1}`);
       const tempXlsxSsId = tempXlsxSs.getId();
       tempXlsxIds.push(tempXlsxSsId);
 
       const defaultSheets = tempXlsxSs.getSheets();
-      const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName(SHEET_DETALLE_NAME);
+      const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName("Sheet1");
       copied.showSheet();
 
       defaultSheets.forEach(sh => {
         if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
       });
 
-      // 4) Export XLSX (con ID en nombre)
-      const idPart = safeFileNamePart_(facturaId) || `ID_${i + 1}`;
-      const xlsxName = `${ss.getName()}__${SHEET_DETALLE_NAME}__${idPart}.xlsx`;
-      const xlsxBlob = exportSpreadsheetAsXlsxBlob_(tempXlsxSsId, xlsxName);
+      // 4) Export XLSX (nombre = ID)
+      const xlsxBlob = exportSpreadsheetAsXlsxBlob_(tempXlsxSsId, `${facturaId}.xlsx`);
       folder.createFile(xlsxBlob);
 
-      // 5) Export PDF agrupada (con ID en nombre)
-      const pdfName = `${ss.getName()}__${SHEET_AGRUPADA_NAME}__${idPart}.pdf`;
-      const pdfBlob = exportSheetAsPdfBlob_(ssId, SHEET_AGRUPADA_GID, pdfName);
+      // 5) Export PDF agrupada (nombre = ID)
+      const pdfBlob = exportSheetAsPdfBlob_(ssId, SHEET_AGRUPADA_GID, `${facturaId}.pdf`);
       folder.createFile(pdfBlob);
 
-      // 6) Borrar hoja temporal del original (ya no hace falta)
+      // 6) Borrar hoja temporal del original
       ss.deleteSheet(tempSheetInOriginal);
     }
-
   } finally {
     // Limpieza extra por si algo falló a mitad
     try {
-      // hojas temporales pendientes
       tempSheetsToDelete.forEach(sh => {
         try {
           if (sh && sh.getParent()) ss.deleteSheet(sh);
@@ -274,6 +263,7 @@ function exportFacturaDetalleAsXlsx() {
     } catch (_) {}
   }
 }
+
 // --------------------------------------------------------------------------------------------------------------
 // - FIN DE LA PRUEBA
 // --------------------------------------------------------------------------------------------------------------
