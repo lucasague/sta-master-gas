@@ -13,262 +13,14 @@ function onOpen() {
 
   // 🚀 Menú Atajos
   const menu = ui.createMenu('🚀 Atajos');
-  menu.addItem('Generar factura', 'generarFacturaPDF');
+  menu.addItem('Generar factura detalle', 'generarFacturaDetalle');
   menu.addItem('Generar factura agrupada', 'generarFacturaAgrupada');
-  menu.addItem('Añadir maquilas a existencias', 'anadirMaquilasExistencias');
-  menu.addItem('Ocultar hojas auxiliares (_)', 'ocultarHojasAuxiliares');
   menu.addSeparator();
-  menu.addItem('__prueba xlsx__', 'exportFacturaDetalleAsXlsx');
+  menu.addItem('Añadir maquilas a existencias', 'anadirMaquilasExistencias');
+  menu.addSeparator();
+  menu.addItem('Ocultar hojas auxiliares (_)', 'ocultarHojasAuxiliares');
   menu.addToUi();
 }
-
-
-
-// --------------------------------------------------------------------------------------------------------------
-// - COMIENZO DE LA PRUEBA
-// ------------------------------------------------------------------------------------------a--------------------
-
-function exportFacturaDetalleAsXlsx() {
-  // ======================
-  // CONFIG (dentro función)
-  // ======================
-  const EXPORT_FOLDER_ID = "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z";
-  const DELETE_TEMP_FILES_AFTER = true;
-
-  // GIDs
-  const SHEET_DETALLE_GID = 333755606;     // _facturaDetalle
-  const SHEET_AGRUPADA_GID = 1412036802;   // _facturaAgrupada
-  const SHEET_FACTURAS_GID = 1019856549;   // Facturas
-
-  // Congelado de fórmulas -> valores (en hoja temporal dentro del original)
-  const ROW_BLOCK = 250;
-  const COL_BLOCK = 20;
-
-  // PDF
-  const PDF_SCALE = 4;
-  const PDF_PORTRAIT = true;
-
-  // ======================
-  // Helpers (internos)
-  // ======================
-  const getSheetByGid_ = (spreadsheet, gid) => {
-    const sheets = spreadsheet.getSheets();
-    for (const sh of sheets) {
-      if (sh.getSheetId() === gid) return sh;
-    }
-    return null;
-  };
-
-  const exportSpreadsheetIdAsBlob_ = (filename, mime, url) => {
-    const token = ScriptApp.getOAuthToken();
-    const resp = UrlFetchApp.fetch(url, {
-      method: "get",
-      headers: { Authorization: `Bearer ${token}` },
-      muteHttpExceptions: true,
-    });
-
-    const code = resp.getResponseCode();
-    if (code !== 200) {
-      const body = resp.getContentText();
-      throw new Error(`Error exportando (${mime}) HTTP ${code}. Respuesta: ${body.slice(0, 800)}`);
-    }
-    return resp.getBlob().setName(filename);
-  };
-
-  const exportSpreadsheetAsXlsxBlob_ = (spreadsheetId, filename) => {
-    const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`;
-    return exportSpreadsheetIdAsBlob_(filename, "xlsx", url);
-  };
-
-  const exportSheetAsPdfBlob_ = (spreadsheetId, gid, filename) => {
-    const base = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export`;
-    const params = [
-      "format=pdf",
-      `gid=${encodeURIComponent(gid)}`,
-      "exportFormat=pdf",
-      "size=A4",
-      `portrait=${PDF_PORTRAIT ? "true" : "false"}`,
-      "fitw=true",
-      `scale=${PDF_SCALE}`,
-      "sheetnames=false",
-      "printtitle=false",
-      "pagenumbers=false",
-      "gridlines=false",
-      "fzr=false",
-    ].join("&");
-
-    return exportSpreadsheetIdAsBlob_(filename, "pdf", `${base}?${params}`);
-  };
-
-  // ======================
-  // MAIN
-  // ======================
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ssId = ss.getId();
-  const ui = SpreadsheetApp.getUi();
-
-  const sheetDetalle = getSheetByGid_(ss, SHEET_DETALLE_GID);
-  const sheetAgrupada = getSheetByGid_(ss, SHEET_AGRUPADA_GID);
-  const sheetFacturas = getSheetByGid_(ss, SHEET_FACTURAS_GID);
-
-  if (!sheetDetalle || !sheetAgrupada || !sheetFacturas) {
-    throw new Error("No se encuentran todas las hojas necesarias por GID (detalle/agrupada/facturas).");
-  }
-
-  // ======================
-  // VALIDACIÓN SELECCIÓN (varios IDs)
-  // ======================
-  const activeRange = ss.getActiveRange();
-  const activeSheet = activeRange.getSheet();
-
-  if (
-    activeSheet.getSheetId() !== SHEET_FACTURAS_GID ||
-    activeRange.getColumn() !== 1 ||
-    activeRange.getNumColumns() !== 1
-  ) {
-    ui.alert(
-      "Selección inválida",
-      "Debes seleccionar una o varias celdas (una sola columna) de la columna A en la hoja Facturas antes de ejecutar esta función.",
-      ui.ButtonSet.OK
-    );
-    return;
-  }
-
-  // Recoge IDs y filtra vacíos / duplicados manteniendo orden
-  const raw = activeRange.getValues().flat();
-  const ids = [];
-  const seen = new Set();
-  for (const v of raw) {
-    const s = String(v == null ? "" : v).trim();
-    if (!s) continue;
-    if (seen.has(s)) continue;
-    seen.add(s);
-    ids.push(s);
-  }
-
-  if (ids.length === 0) {
-    ui.alert("No hay IDs", "La selección no contiene ningún ID válido.", ui.ButtonSet.OK);
-    return;
-  }
-
-  if (ids.length > 1) {
-    const resp = ui.alert(
-      "Confirmación",
-      `Has seleccionado ${ids.length} IDs.\n¿Quieres exportar TODOS los IDs seleccionados?`,
-      ui.ButtonSet.YES_NO
-    );
-    if (resp !== ui.Button.YES) return;
-  }
-
-  // Carpeta destino
-  const folder = EXPORT_FOLDER_ID
-    ? DriveApp.getFolderById(EXPORT_FOLDER_ID)
-    : DriveApp.getRootFolder();
-
-  // Hojas pueden estar ocultas: guardamos/restauramos
-  const wasDetalleHidden = sheetDetalle.isSheetHidden();
-  const wasAgrupadaHidden = sheetAgrupada.isSheetHidden();
-
-  // Para limpiar temporales
-  const tempXlsxIds = [];
-  const tempSheetsToDelete = [];
-
-  try {
-    // Asegurar visibles mientras se trabaja
-    if (wasDetalleHidden) sheetDetalle.showSheet();
-    if (wasAgrupadaHidden) sheetAgrupada.showSheet();
-
-    SpreadsheetApp.flush();
-
-    for (let i = 0; i < ids.length; i++) {
-      const facturaId = ids[i];
-
-      // 1) Pegar ID en _facturaAgrupada!A1
-      sheetAgrupada.getRange("A1").setValue(facturaId);
-      SpreadsheetApp.flush();
-
-      // 2) Hoja temporal dentro del original para congelar valores sin romper referencias
-      const tempSheetName = `__TEMP_VALORES__${Date.now()}__${i + 1}`;
-      const tempSheetInOriginal = sheetDetalle.copyTo(ss).setName(tempSheetName);
-      tempSheetsToDelete.push(tempSheetInOriginal);
-
-      // Congelar fórmulas -> valores en TODA la hoja (por bloques)
-      SpreadsheetApp.flush();
-      const maxRows = tempSheetInOriginal.getMaxRows();
-      const maxCols = tempSheetInOriginal.getMaxColumns();
-
-      for (let r = 1; r <= maxRows; r += ROW_BLOCK) {
-        const nr = Math.min(ROW_BLOCK, maxRows - r + 1);
-        for (let c = 1; c <= maxCols; c += COL_BLOCK) {
-          const nc = Math.min(COL_BLOCK, maxCols - c + 1);
-          const block = tempSheetInOriginal.getRange(r, c, nr, nc);
-          block.copyTo(block, { contentsOnly: true });
-        }
-      }
-
-      // Eliminar columnas ocultas
-      for (let c = tempSheetInOriginal.getMaxColumns(); c >= 1; c--) {
-        if (tempSheetInOriginal.isColumnHiddenByUser(c)) {
-          tempSheetInOriginal.deleteColumn(c);
-        }
-      }
-
-      // 3) Spreadsheet temporal para XLSX
-      const tempXlsxSs = SpreadsheetApp.create(`__TEMP_EXPORT__${Date.now()}__${i + 1}`);
-      const tempXlsxSsId = tempXlsxSs.getId();
-      tempXlsxIds.push(tempXlsxSsId);
-
-      const defaultSheets = tempXlsxSs.getSheets();
-      const copied = tempSheetInOriginal.copyTo(tempXlsxSs).setName("Sheet1");
-      copied.showSheet();
-
-      defaultSheets.forEach(sh => {
-        if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
-      });
-
-      // 4) Export XLSX (nombre = ID)
-      const xlsxBlob = exportSpreadsheetAsXlsxBlob_(tempXlsxSsId, `${facturaId}.xlsx`);
-      folder.createFile(xlsxBlob);
-
-      // 5) Export PDF agrupada (nombre = ID)
-      const pdfBlob = exportSheetAsPdfBlob_(ssId, SHEET_AGRUPADA_GID, `${facturaId}.pdf`);
-      folder.createFile(pdfBlob);
-
-      // 6) Borrar hoja temporal del original
-      ss.deleteSheet(tempSheetInOriginal);
-    }
-  } finally {
-    // Limpieza extra por si algo falló a mitad
-    try {
-      tempSheetsToDelete.forEach(sh => {
-        try {
-          if (sh && sh.getParent()) ss.deleteSheet(sh);
-        } catch (_) {}
-      });
-    } catch (_) {}
-
-    // restaurar ocultación
-    try {
-      if (wasDetalleHidden) sheetDetalle.hideSheet();
-      if (wasAgrupadaHidden) sheetAgrupada.hideSheet();
-    } catch (_) {}
-
-    // borrar spreadsheets temporales
-    try {
-      if (DELETE_TEMP_FILES_AFTER) {
-        tempXlsxIds.forEach(id => {
-          try { DriveApp.getFileById(id).setTrashed(true); } catch (_) {}
-        });
-      }
-    } catch (_) {}
-  }
-}
-
-// --------------------------------------------------------------------------------------------------------------
-// - FIN DE LA PRUEBA
-// --------------------------------------------------------------------------------------------------------------
-
-
 
 function buildDependencyMatrix() {
   const ss = SpreadsheetApp.getActive();
@@ -604,178 +356,267 @@ function ocultarHojasAuxiliares() {
 // ============================
 // FACTURAS (Mantiene el formato de miles con punto y decimal con coma)
 // ============================
+function generarFacturaDetalle() {
+  const CONFIG = {
+    EXPORT_FOLDER_ID: "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z",
+
+    // GIDs
+    SHEET_FACTURAS_GID: 1019856549,     // Facturas (selección de IDs, col A)
+    SHEET_FACTURA_GID: 649064952,       // _factura (pdf)
+
+    // Antes de exportar: escribir ID en A1 de esta hoja
+    TARGET_A1_GID: 649064952,           // _factura
+
+    // PDF
+    PDF_SCALE: 4,
+    PDF_PORTRAIT: true,
+
+    // XLSX (no se usa aquí, pero se deja por compatibilidad del core)
+    DELETE_TEMP_FILES_AFTER: true,
+  };
+
+  ejecutarExport_(CONFIG, { doXlsx: false, doPdf: true, pdfGid: CONFIG.SHEET_FACTURA_GID });
+}
+
+function generarFacturaAgrupada() {
+  const CONFIG = {
+    EXPORT_FOLDER_ID: "1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z",
+
+    // GIDs
+    SHEET_FACTURAS_GID: 1019856549,     // Facturas (selección de IDs, col A)
+    SHEET_DETALLE_GID: 333755606,       // _facturaDetalle (xlsx, valores)
+    SHEET_AGRUPADA_GID: 1412036802,     // _facturaAgrupada (pdf)
+
+    // Antes de exportar: escribir ID en A1 de esta hoja
+    TARGET_A1_GID: 1412036802,          // _facturaAgrupada
+
+    // Congelado fórmulas->valores (toda la hoja)
+    ROW_BLOCK: 250,
+    COL_BLOCK: 20,
+
+    // PDF
+    PDF_SCALE: 4,
+    PDF_PORTRAIT: true,
+
+    // XLSX
+    DELETE_TEMP_FILES_AFTER: true,
+  };
+
+  ejecutarExport_(CONFIG, { doXlsx: true, doPdf: true, pdfGid: CONFIG.SHEET_AGRUPADA_GID });
+}
 
 /**
- * Función base para generar un PDF (y opcionalmente un XLSX de detalle)
- * de una factura a partir de una plantilla, usando un ID de factura.
- * @param {object} config Configuración de la exportación.
+ * Núcleo común: valida selección, confirma multi-ID, gestiona ocultación,
+ * escribe A1 si procede, exporta PDF y/o XLSX por cada ID.
  */
-function generarFacturaBase(config) {
-  // ID de la carpeta de Drive donde se guardarán los archivos
-  const folder = DriveApp.getFolderById("1QKXWvjv6tQVAKuTz2tofidKREjNMRc6Z");
+function ejecutarExport_(CONFIG, options) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ssId = ss.getId();
   const ui = SpreadsheetApp.getUi();
 
-  const sheet = ss.getSheetByName(config.hojaPDF);
-  if (!sheet) {
-    ui.alert("No se encontró la hoja: " + config.hojaPDF);
-    return;
-  }
+  // ===== helpers =====
+  const getSheetByGid_ = (gid) => {
+    if (gid == null) return null;
+    for (const sh of ss.getSheets()) {
+      if (sh.getSheetId() === gid) return sh;
+    }
+    return null;
+  };
 
-  // 1. Pedir ID de factura
-  const response = ui.prompt(config.tituloPrompt, config.mensajePrompt, ui.ButtonSet.OK_CANCEL);
-  if (response.getSelectedButton() !== ui.Button.OK) return;
-  const facturaId = response.getResponseText().trim();
-  if (!facturaId) return;
-
-  // 2. Escribir ID y esperar a que la hoja recalcule (fundamental para PDF)
-  sheet.getRange("A1").setValue(facturaId);
-  SpreadsheetApp.flush(); // Fuerza la escritura
-  Utilities.sleep(2000); // Espera 2 segundos para asegurar el recálculo
-  
-  // 3. Establecer formato numérico: punto como miles, coma como decimal.
-  try {
-     // Formato español: punto como separador de miles y coma como decimal.
-     sheet.getRange("B:G").setNumberFormat("#.##0,00"); 
-  } catch (e) {
-     Logger.log("No se pudo aplicar formato numérico a B:G en " + config.hojaPDF + ": " + e.toString());
-  }
-
-  const spreadsheetId = ss.getId();
-  const sheetId = sheet.getSheetId();
-  const url_base = "https://docs.google.com/spreadsheets/d/" + spreadsheetId + "/export?";
-
-  // 4. Exportar PDF
-  const exportUrlPDF = url_base + [
-    "format=pdf",
-    "size=A4",
-    "portrait=true", 
-    "fitw=true", 
-    "sheetnames=false",
-    "printtitle=false",
-    "pagenumbers=false",
-    "gridlines=false",
-    "fzr=FALSE",
-    "top_margin=0.2",
-    "bottom_margin=0",
-    "left_margin=0.6",
-    "right_margin=0.6",
-    "gid=" + sheetId 
-  ].join("&");
-
-  const token = ScriptApp.getOAuthToken();
-  try {
-    const fetchResponsePDF = UrlFetchApp.fetch(exportUrlPDF, {
-      headers: { 'Authorization': 'Bearer ' + token }
+  const exportAsBlob_ = (filename, mime, url) => {
+    const token = ScriptApp.getOAuthToken();
+    const resp = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: { Authorization: `Bearer ${token}` },
+      muteHttpExceptions: true,
     });
-    const pdfBlob = fetchResponsePDF.getBlob().setName(config.prefijoNombre + " " + facturaId + ".pdf");
-    folder.createFile(pdfBlob);
-  } catch (e) {
-    ui.alert("Error al generar el PDF: " + e.toString());
+    const code = resp.getResponseCode();
+    if (code !== 200) {
+      const body = resp.getContentText();
+      throw new Error(`Error exportando (${mime}) HTTP ${code}. Respuesta: ${body.slice(0, 800)}`);
+    }
+    return resp.getBlob().setName(filename);
+  };
+
+  const exportSheetPdf_ = (gid, filename) => {
+    const base = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(ssId)}/export`;
+    const params = [
+      "format=pdf",
+      `gid=${encodeURIComponent(gid)}`,
+      "exportFormat=pdf",
+      "size=A4",
+      `portrait=${CONFIG.PDF_PORTRAIT ? "true" : "false"}`,
+      "fitw=true",
+      `scale=${CONFIG.PDF_SCALE}`,
+      "sheetnames=false",
+      "printtitle=false",
+      "pagenumbers=false",
+      "gridlines=false",
+      "fzr=false",
+    ].join("&");
+    return exportAsBlob_(filename, "pdf", `${base}?${params}`);
+  };
+
+  const exportSpreadsheetXlsx_ = (spreadsheetId, filename) => {
+    const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=xlsx`;
+    return exportAsBlob_(filename, "xlsx", url);
+  };
+
+  const folder = CONFIG.EXPORT_FOLDER_ID
+    ? DriveApp.getFolderById(CONFIG.EXPORT_FOLDER_ID)
+    : DriveApp.getRootFolder();
+
+  // ===== validar selección =====
+  const facturasSheet = getSheetByGid_(CONFIG.SHEET_FACTURAS_GID);
+  if (!facturasSheet) throw new Error("No existe la hoja Facturas (por GID).");
+
+  const activeRange = ss.getActiveRange();
+  const activeSheet = activeRange.getSheet();
+
+  if (
+    activeSheet.getSheetId() !== CONFIG.SHEET_FACTURAS_GID ||
+    activeRange.getColumn() !== 1 ||
+    activeRange.getNumColumns() !== 1
+  ) {
+    ui.alert(
+      "Selección inválida",
+      "Debes seleccionar una o varias celdas (una sola columna) de la columna A en la hoja Facturas.",
+      ui.ButtonSet.OK
+    );
     return;
   }
-  
-  // 5. Exportar XLSX (solo si se indicó hojaXLSX)
-  if (config.hojaXLSX) {
-    const hojaOriginal = ss.getSheetByName(config.hojaXLSX);
-    if (!hojaOriginal) {
-      ui.alert("No se encontró la hoja de detalle: " + config.hojaXLSX);
-      return;
-    }
 
-    // Crear hoja temporal
-    const tmpName = "__tmpExport";
-    const hojaTmpExistente = ss.getSheetByName(tmpName);
-    if (hojaTmpExistente) ss.deleteSheet(hojaTmpExistente); 
-    const nuevaHoja = ss.insertSheet(tmpName);
+  const raw = activeRange.getValues().flat();
+  const ids = [];
+  const seen = new Set();
+  for (const v of raw) {
+    const s = String(v == null ? "" : v).trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    ids.push(s);
+  }
 
-    const ultimaFila = hojaOriginal.getLastRow();
-    const ultimaCol = hojaOriginal.getLastColumn();
-    
-    if (ultimaFila < 1) {
-      ss.deleteSheet(nuevaHoja);
-      ui.alert("La hoja de detalle está vacía, se omite la exportación a XLSX.");
-      return;
-    }
-    
-    const rangoDatos = hojaOriginal.getRange(1, 1, ultimaFila, ultimaCol);
+  if (ids.length === 0) {
+    ui.alert("No hay IDs", "La selección no contiene ningún ID válido.", ui.ButtonSet.OK);
+    return;
+  }
 
-    // Copiar valores y formato
-    rangoDatos.copyTo(nuevaHoja.getRange(1, 1), {contentsOnly:true}); 
-    rangoDatos.copyTo(nuevaHoja.getRange(1, 1), {formatOnly:true}); 
-    
-    // Aplicar formato numérico a la hoja temporal para la exportación XLSX
-    try {
-       nuevaHoja.getRange("B:G").setNumberFormat("#.##0,00"); 
-    } catch (e) { /* Ignorar error de formato */ }
+  if (ids.length > 1) {
+    const resp = ui.alert(
+      "Confirmación",
+      `Has seleccionado ${ids.length} IDs.\n¿Quieres exportar TODOS los IDs seleccionados?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
+  }
 
-    // Copiar anchos de columnas
-    for (let col = 1; col <= ultimaCol; col++) {
-      const ancho = hojaOriginal.getColumnWidth(col);
-      nuevaHoja.setColumnWidth(col, ancho);
-    }
+  // ===== preparar hojas implicadas =====
+  const detalleSheet = options.doXlsx ? getSheetByGid_(CONFIG.SHEET_DETALLE_GID) : null;
+  if (options.doXlsx && !detalleSheet) throw new Error("No existe la hoja _facturaDetalle (por GID).");
 
-    // Quitar columnas ocultas en la original
-    for (let col = ultimaCol; col >= 1; col--) {
-      if (hojaOriginal.isColumnHiddenByUser(col)) {
-        nuevaHoja.deleteColumn(col);
+  const pdfSheet = getSheetByGid_(options.pdfGid);
+  if (!pdfSheet) throw new Error("No existe la hoja del PDF (por GID).");
+
+  const targetA1Sheet = getSheetByGid_(CONFIG.TARGET_A1_GID);
+  if (!targetA1Sheet) throw new Error("No existe la hoja destino para escribir A1 (por GID).");
+
+  // Guardar/forzar visibilidad
+  const toRestore = [];
+  const ensureVisible_ = (sh) => {
+    const wasHidden = sh.isSheetHidden();
+    toRestore.push([sh, wasHidden]);
+    if (wasHidden) sh.showSheet();
+  };
+
+  // Temporales XLSX a limpiar
+  const tempXlsxIds = [];
+
+  try {
+    ensureVisible_(pdfSheet);
+    ensureVisible_(targetA1Sheet);
+    if (detalleSheet) ensureVisible_(detalleSheet);
+
+    SpreadsheetApp.flush();
+
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+
+      // 1) Escribir A1 (sin formato)
+      targetA1Sheet.getRange("A1").setValue(id);
+      SpreadsheetApp.flush();
+
+      // 2) PDF (nombre = ID)
+      if (options.doPdf) {
+        const pdfBlob = exportSheetPdf_(options.pdfGid, `${id}.pdf`);
+        folder.createFile(pdfBlob);
+      }
+
+      // 3) XLSX (nombre = ID) con valores y sin columnas ocultas
+      if (options.doXlsx) {
+        // Hoja temporal dentro del original (mantiene referencias)
+        const tempSheetName = `__TEMP_VALORES__${Date.now()}__${i + 1}`;
+        const tempSheet = detalleSheet.copyTo(ss).setName(tempSheetName);
+
+        try {
+          SpreadsheetApp.flush();
+
+          // Congelar fórmulas->valores en TODA la hoja por bloques
+          const maxRows = tempSheet.getMaxRows();
+          const maxCols = tempSheet.getMaxColumns();
+
+          for (let r = 1; r <= maxRows; r += CONFIG.ROW_BLOCK) {
+            const nr = Math.min(CONFIG.ROW_BLOCK, maxRows - r + 1);
+            for (let c = 1; c <= maxCols; c += CONFIG.COL_BLOCK) {
+              const nc = Math.min(CONFIG.COL_BLOCK, maxCols - c + 1);
+              const block = tempSheet.getRange(r, c, nr, nc);
+              block.copyTo(block, { contentsOnly: true });
+            }
+          }
+
+          // Eliminar columnas ocultas
+          for (let c = tempSheet.getMaxColumns(); c >= 1; c--) {
+            if (tempSheet.isColumnHiddenByUser(c)) tempSheet.deleteColumn(c);
+          }
+
+          // Spreadsheet temporal para export
+          const tempXlsxSs = SpreadsheetApp.create(`__TEMP_EXPORT__${Date.now()}__${i + 1}`);
+          const tempXlsxId = tempXlsxSs.getId();
+          tempXlsxIds.push(tempXlsxId);
+
+          const defaultSheets = tempXlsxSs.getSheets();
+          const copied = tempSheet.copyTo(tempXlsxSs).setName("Sheet1");
+          copied.showSheet();
+          defaultSheets.forEach(sh => {
+            if (sh.getSheetId() !== copied.getSheetId()) tempXlsxSs.deleteSheet(sh);
+          });
+
+          const xlsxBlob = exportSpreadsheetXlsx_(tempXlsxId, `${id}.xlsx`);
+          folder.createFile(xlsxBlob);
+
+        } finally {
+          // borrar hoja temporal del original
+          try { ss.deleteSheet(tempSheet); } catch (_) {}
+        }
       }
     }
-    
-    // Quitar notas/comentarios (limpieza)
-    nuevaHoja.getDataRange().clearNote();
-
-    // Exportar XLSX
-    const exportUrlXLSX = url_base + [
-      "format=xlsx",
-      "gid=" + nuevaHoja.getSheetId()
-    ].join("&");
-
+  } finally {
+    // restaurar ocultación
     try {
-      const fetchResponseXLSX = UrlFetchApp.fetch(exportUrlXLSX, {
-        headers: { 'Authorization': 'Bearer ' + token }
+      toRestore.forEach(([sh, wasHidden]) => {
+        try { if (wasHidden) sh.hideSheet(); } catch (_) {}
       });
-      const xlsxBlob = fetchResponseXLSX.getBlob().setName(config.prefijoNombre + " " + facturaId + " - Detalle.xlsx");
-      folder.createFile(xlsxBlob);
-    } catch (e) {
-       ui.alert("Error al generar el XLSX: " + e.toString());
-    } finally {
-       // Siempre eliminar hoja temporal
-       ss.deleteSheet(nuevaHoja);
-    }
+    } catch (_) {}
+
+    // borrar temporales xlsx
+    try {
+      if (CONFIG.DELETE_TEMP_FILES_AFTER) {
+        tempXlsxIds.forEach(id => {
+          try { DriveApp.getFileById(id).setTrashed(true); } catch (_) {}
+        });
+      }
+    } catch (_) {}
   }
-
-  // 6. Aviso final
-  ui.alert(config.alertaFinal.replace("{{facturaId}}", facturaId));
-}
-
-/**
- * Genera el PDF de una factura normal usando la plantilla "_factura".
- */
-function generarFacturaPDF() {
-  generarFacturaBase({
-    hojaPDF: "_factura",
-    tituloPrompt: "Facturación",
-    mensajePrompt: "Pega el ID de la factura (ej. 2025-001):",
-    prefijoNombre: "Factura",
-    hojaXLSX: null, 
-    alertaFinal: "Factura {{facturaId}} exportada en PDF."
-  });
-}
-
-/**
- * Genera el PDF de una factura agrupada ("_facturaAgrupada")
- * y el detalle en XLSX ("_facturaDetalle").
- */
-function generarFacturaAgrupada() {
-  generarFacturaBase({
-    hojaPDF: "_facturaAgrupada",
-    tituloPrompt: "Facturación Agrupada",
-    mensajePrompt: "Pega el ID de la factura agrupada (ej. AG-2025-10):",
-    prefijoNombre: "Factura Agrupada",
-    hojaXLSX: "_facturaDetalle", 
-    alertaFinal: "Factura agrupada {{facturaId}} exportada:\n- Factura en PDF\n- Detalle en XLSX"
-  });
 }
 
 //-----------------------
