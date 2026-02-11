@@ -22,6 +22,93 @@ function onOpen() {
   menu.addToUi();
 }
 
+/**
+ * ID secuencial (max(A:A)+1) estable en col A (ID) cuando se rellena "Contrato"
+ * (columna detectada por encabezado), SOLO en la hoja Compras, con gid=893614889.
+ */
+function onEdit(e) {
+  try {
+    const sh = e.range.getSheet();
+
+    // 🔒 Solo esta hoja
+    if (sh.getSheetId() !== 893614889) return;
+
+    const HEADER_ROW = 1;
+    const COL_ID = 1; // A
+
+    const editedRange = e.range;
+    const editedRowStart = editedRange.getRow();
+    const editedColStart = editedRange.getColumn();
+    const numRows = editedRange.getNumRows();
+    const numCols = editedRange.getNumColumns();
+
+    // Ignorar cambios en cabecera
+    if (editedRowStart <= HEADER_ROW) return;
+
+    // Encontrar columna "Contrato" por encabezado (fila 1)
+    const lastCol = sh.getLastColumn();
+    if (lastCol < 1) return;
+
+    const headers = sh.getRange(HEADER_ROW, 1, 1, lastCol).getValues()[0].map(v => String(v ?? "").trim());
+    const contratoCol = headers.indexOf("Contrato") + 1; // 1-based; 0 si no existe
+    if (contratoCol === 0) return;
+
+    // Solo actuar si la edición intersecta con la columna "Contrato"
+    const editedColEnd = editedColStart + numCols - 1;
+    if (contratoCol < editedColStart || contratoCol > editedColEnd) return;
+
+    // Lock para evitar duplicados con ediciones concurrentes
+    const lock = LockService.getDocumentLock();
+    lock.waitLock(30000);
+
+    try {
+      // Leer IDs actuales y calcular MAX real (numérico) en A2:A
+      const lastRow = sh.getLastRow();
+      if (lastRow < 2) return;
+
+      const idValues = sh.getRange(2, COL_ID, lastRow - 1, 1).getValues();
+      let maxId = 0;
+      for (const [v] of idValues) {
+        const n = parseInt(String(v ?? "").trim(), 10);
+        if (!isNaN(n) && n > maxId) maxId = n;
+      }
+
+      // Leer contratos del rango editado SOLO en la columna contratoCol
+      const rowEnd = editedRowStart + numRows - 1;
+      const contratos = sh.getRange(editedRowStart, contratoCol, numRows, 1).getValues();
+
+      // Leer IDs correspondientes para saber cuáles están vacíos
+      const ids = sh.getRange(editedRowStart, COL_ID, numRows, 1).getValues();
+
+      // Preparar escritura en bloque
+      const newIds = [];
+      let nextId = maxId + 1;
+
+      for (let i = 0; i < numRows; i++) {
+        const contrato = String(contratos[i][0] ?? "").trim();
+        const existingId = String(ids[i][0] ?? "").trim();
+
+        if (contrato && !existingId) {
+          newIds.push([nextId]);
+          nextId++;
+        } else {
+          newIds.push([ids[i][0]]); // mantener tal cual
+        }
+      }
+
+      // Escribir solo si hubo algún cambio (algún ID nuevo)
+      const anyNew = newIds.some((r, i) => String(r[0] ?? "") !== String(ids[i][0] ?? ""));
+      if (anyNew) {
+        sh.getRange(editedRowStart, COL_ID, numRows, 1).setValues(newIds);
+      }
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (err) {
+    // onEdit no debe lanzar errores
+  }
+}
+
 function buildDependencyMatrix() {
   const ss = SpreadsheetApp.getActive();
 
@@ -203,7 +290,6 @@ function columnToLetter(column) {
   return letter;
 }
 
-
 function collectRefs(formula, regex, outSet) {
   regex.lastIndex = 0;
   let m;
@@ -215,18 +301,6 @@ function collectRefs(formula, regex, outSet) {
     if (colLetter) outSet.add({ sheetName, colLetter });
   }
 }
-
-function columnToLetter(column) {
-  let temp = '';
-  let letter = '';
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
-}
-
 
 /**
  * Crea o actualiza una hoja llamada "ÍNDICE" con enlaces
