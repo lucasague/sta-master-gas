@@ -454,7 +454,12 @@ function generarFacturaAgrupada() {
     DELETE_TEMP_FILES_AFTER: true,
   };
 
-  ejecutarExport_(CONFIG, { doXlsx: true, doPdf: true, pdfGid: CONFIG.SHEET_AGRUPADA_GID });
+  ejecutarExport_(CONFIG, {
+    doXlsx: true,
+    doPdf: true,
+    pdfGid: CONFIG.SHEET_AGRUPADA_GID,
+    statusHeader: "Generada agrupada",
+  });
 }
 
 function generarFacturaDetalle() {
@@ -476,7 +481,12 @@ function generarFacturaDetalle() {
     DELETE_TEMP_FILES_AFTER: true,
   };
 
-  ejecutarExport_(CONFIG, { doXlsx: false, doPdf: true, pdfGid: CONFIG.SHEET_FACTURA_GID });
+  ejecutarExport_(CONFIG, {
+    doXlsx: false,
+    doPdf: true,
+    pdfGid: CONFIG.SHEET_FACTURA_GID,
+    statusHeader: "Generada detalle",
+  });
 }
 
 function ejecutarExport_(CONFIG, options) {
@@ -540,6 +550,19 @@ function ejecutarExport_(CONFIG, options) {
   const facturasSheet = getSheetByGid_(CONFIG.SHEET_FACTURAS_GID);
   if (!facturasSheet) throw new Error("No existe la hoja Facturas (por GID).");
 
+  const headers = facturasSheet
+    .getRange(1, 1, 1, facturasSheet.getLastColumn())
+    .getValues()[0]
+    .map((v) => String(v ?? "").trim());
+
+  const statusCol = options.statusHeader
+    ? headers.indexOf(options.statusHeader) + 1
+    : 0;
+
+  if (options.statusHeader && statusCol === 0) {
+    throw new Error(`No se encontró la columna \"${options.statusHeader}\" en la hoja Facturas.`);
+  }
+
   const activeRange = ss.getActiveRange();
   const activeSheet = activeRange.getSheet();
 
@@ -563,26 +586,26 @@ function ejecutarExport_(CONFIG, options) {
   }
 
   // IDs únicos no vacíos (en orden)
-  const raw = activeRange.getValues().flat();
-  const ids = [];
+  const raw = activeRange.getValues();
+  const selectedItems = [];
   const seen = new Set();
-  for (const v of raw) {
-    const s = String(v == null ? "" : v).trim();
+  for (let i = 0; i < raw.length; i++) {
+    const s = String(raw[i][0] == null ? "" : raw[i][0]).trim();
     if (!s) continue;
     if (seen.has(s)) continue;
     seen.add(s);
-    ids.push(s);
+    selectedItems.push({ id: s, row: startRow + i });
   }
 
-  if (ids.length === 0) {
+  if (selectedItems.length === 0) {
     ui.alert("No hay IDs", "La selección no contiene ningún ID válido.", ui.ButtonSet.OK);
     return;
   }
 
-  if (ids.length > 1) {
+  if (selectedItems.length > 1) {
     const resp = ui.alert(
       "Confirmación",
-      `Has seleccionado ${ids.length} IDs.\n¿Quieres exportar TODOS los IDs seleccionados?`,
+      `Has seleccionado ${selectedItems.length} IDs.\n¿Quieres exportar TODOS los IDs seleccionados?`,
       ui.ButtonSet.YES_NO
     );
     if (resp !== ui.Button.YES) return;
@@ -616,8 +639,8 @@ function ejecutarExport_(CONFIG, options) {
 
     SpreadsheetApp.flush();
 
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
+    for (let i = 0; i < selectedItems.length; i++) {
+      const { id, row } = selectedItems[i];
 
       // 1) Escribir A1 (sin formato)
       targetA1Sheet.getRange("A1").setValue(id);
@@ -675,6 +698,11 @@ function ejecutarExport_(CONFIG, options) {
           // borrar hoja temporal del original
           try { ss.deleteSheet(tempSheet); } catch (_) {}
         }
+      }
+
+      // 4) Marcar como generada en Facturas
+      if (statusCol > 0) {
+        facturasSheet.getRange(row, statusCol).setValue("✔");
       }
     }
   } finally {
